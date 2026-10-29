@@ -4,6 +4,7 @@ from eltbench_tinker.local_env import LocalELTEnvironment
 from eltbench_tinker.harbor_grader import grade as harbor_grade
 from eltbench_tinker.harbor_task import materialize_local_harbor_task
 from eltbench_tinker.official import OfficialELTBenchTask
+from eltbench_tinker.official_compare import rows_match, values_match
 from eltbench_tinker.task import ELTTask, ExpectedTable
 
 
@@ -137,3 +138,76 @@ def test_official_books_importer_redacts_credentials(tmp_path: Path) -> None:
     assert "secret" not in exposed
     assert "alice" not in exposed
     assert "publishers" in task.instruction()
+
+
+def test_submit_is_idempotent_and_terminates_episode() -> None:
+    env = LocalELTEnvironment(make_task())
+    try:
+        env.reset()
+        result = env.run(
+            "cat > solution.sql <<'SQL'\n"
+            "CREATE OR REPLACE TABLE customer_revenue AS\n"
+            "SELECT c.customer_id, c.name, "
+            "CAST(COALESCE(SUM(o.amount), 0) AS DECIMAL(38,2)) AS revenue\n"
+            "FROM read_csv_auto('customers.csv') c\n"
+            "LEFT JOIN read_csv_auto('orders.csv') o USING (customer_id)\n"
+            "GROUP BY c.customer_id, c.name;\n"
+            "SQL\n"
+        )
+        assert result.exit_code == 0
+        submission = env.submit("solution.sql")
+        assert submission.reward == 1.0
+        assert submission.idempotent
+        assert submission.transition_seconds >= 0
+        assert submission.grade_seconds >= 0
+        try:
+            env.run("true")
+        except RuntimeError as error:
+            assert "terminated" in str(error)
+        else:
+            raise AssertionError("terminated episode accepted another action")
+    finally:
+        env.cleanup()
+
+
+def test_nop_and_append_only_solution_cannot_get_full_reward(tmp_path: Path) -> None:
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    task = ELTTask(
+        task_id="append-cheat",
+        instruction="Create counters with one row containing value 1.",
+        source_dir=empty,
+        expected_tables=(
+            ExpectedTable(
+                name="counters",
+                columns=(("value", "INTEGER"),),
+                rows=((1,),),
+            ),
+        ),
+    )
+    env = LocalELTEnvironment(task)
+    try:
+        env.reset()
+        assert env.grade().reward == 0.0  # nop must fail
+        assert env.workspace is not None
+        (env.workspace / "append.sql").write_text(
+            "CREATE TABLE IF NOT EXISTS counters(value INTEGER);"
+            "INSERT INTO counters VALUES (1);"
+        )
+        submission = env.submit("append.sql")
+        assert not submission.idempotent
+        assert submission.reward < 1.0
+    finally:
+        env.cleanup()
+
+
+def test_official_comparison_semantics() -> None:
+    assert values_match("0E-9", "0.0")
+    assert values_match(" New York ", "new york")
+    assert values_match("100.5", "100.0", rtol=1e-2)
+    assert not values_match(None, "")
+    assert rows_match(
+        [(2, "B", "20.000"), (1, "A", "10")],
+        [(1, "a", 10.0), (2, "b", 20)],
+        key_indices=(0,),
+    )

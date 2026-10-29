@@ -13,8 +13,13 @@ environment. It deliberately separates:
 
 - Credential-free DuckDB episode reset and cleanup.
 - Multi-turn command workspace plus explicit SQL execution.
+- Explicit `submit()` terminal transition: execute the submitted pipeline,
+  rerun it to test idempotence, grade the final state, and reject later actions.
 - Hidden final-state verification of table existence, exact schema, and rows.
 - Bounded reward where outcome correctness dominates shaping.
+- ELT-Bench-compatible value/row comparison helpers: numeric tolerance,
+  case-insensitive strings, null handling, deterministic key-first sorting.
+- Transition and grading latency measurements on each local submission.
 - Adapter that feeds Harbor-formatted ELT tasks into Tinker's existing
   `HarborDatasetBuilder` / `HarborEnvGroupBuilder`.
 - Importer for the real `uiuc-kang-lab/ELT-Bench` repository. It reads a
@@ -23,7 +28,9 @@ environment. It deliberately separates:
 - Harbor task materializer with a real `environment/Dockerfile`, immutable
   public assets, and a hidden `tests/test.sh` grader that writes Harbor's
   `/logs/verifier/reward.txt` contract.
-- Integration tests for success, partial reward, and state isolation.
+- Integration tests for oracle success, nop failure, append/idempotence failure,
+  terminal-state enforcement, partial reward, state isolation, official import
+  redaction, and official comparison semantics.
 
 ## Run the local integration test
 
@@ -98,6 +105,10 @@ The remaining external executions are:
    case-insensitive strings) in the hidden verifier;
 3. provide Tinker API access and run one optimizer step with the execution
    reward.
+
+Before submission, the credentialed runner should also run the same three
+adversarial acceptance checks used locally: oracle succeeds, nop fails, and a
+non-idempotent append-only pipeline cannot receive full reward.
 
 Do not place warehouse credentials in task images, prompts, logs, or verifier
 artifacts.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -53,6 +54,20 @@ class DuckDBDestination:
             (table,),
         )
         return bool(rows)
+
+    def state_fingerprint(self) -> str:
+        """Stable hash of all user tables, schemas, and canonically sorted rows."""
+        tables = self.query(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema='main' ORDER BY table_name"
+        )
+        digest = hashlib.sha256()
+        for (table,) in tables:
+            digest.update(str(table).encode())
+            digest.update(repr(self.columns(str(table))).encode())
+            rows = self.query(f'SELECT * FROM "{table}" ORDER BY ALL')
+            digest.update(repr(rows).encode())
+        return digest.hexdigest()
 
     def cleanup(self) -> None:
         shutil.rmtree(self.root, ignore_errors=True)
