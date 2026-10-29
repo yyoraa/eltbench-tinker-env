@@ -17,6 +17,12 @@ environment. It deliberately separates:
 - Bounded reward where outcome correctness dominates shaping.
 - Adapter that feeds Harbor-formatted ELT tasks into Tinker's existing
   `HarborDatasetBuilder` / `HarborEnvGroupBuilder`.
+- Importer for the real `uiuc-kang-lab/ELT-Bench` repository. It reads a
+  destination/task pair, target `data_model.yaml`, and shared source schemas,
+  while stripping credentials from the agent-visible bundle.
+- Harbor task materializer with a real `environment/Dockerfile`, immutable
+  public assets, and a hidden `tests/test.sh` grader that writes Harbor's
+  `/logs/verifier/reward.txt` contract.
 - Integration tests for success, partial reward, and state isolation.
 
 ## Run the local integration test
@@ -59,18 +65,39 @@ one fresh sandbox per rollout, gives the agent a bash tool, uploads hidden tests
 only after the episode, parses `/logs/verifier/reward.txt`, computes group
 advantages, and performs the optimizer update.
 
+## Official ELT-Bench import
+
+```python
+from pathlib import Path
+from eltbench_tinker.official import OfficialELTBenchTask
+from eltbench_tinker.harbor_task import materialize_official_public_task
+
+task = OfficialELTBenchTask.load(
+    Path("../ELT-Bench"), destination="snowflake", name="books"
+)
+task_dir = materialize_official_public_task(task, Path("build/tasks"))
+```
+
+This creates the agent-visible half of the task only. The official repo's
+ground-truth CSVs and destination credentials must stay outside the image and
+prompt. A credentialed runner mounts credentials into the sandbox and supplies
+the hidden verifier at grading time. This mirrors Tinker Harbor's behavior:
+`tests/` is uploaded only after the agent episode ends.
+
 ## Still required for the official submission
 
-The paper points to `https://github.com/uiuc-kang-lab/ETL`, but that repository
-currently returns `Repository not found`. An official task cannot be truthfully
-ported or run until Daniel's task assets/repository access and warehouse
-credentials are available. Once provided, add:
+The correct upstream repository is
+`https://github.com/uiuc-kang-lab/ELT-Bench`. The importer and public Harbor
+task contract are implemented and tested against its `snowflake/books` task.
+The remaining external executions are:
 
-1. an official ELT-Bench task importer;
-2. the official destination adapter (for example Snowflake);
-3. hidden verifier fixtures derived from the benchmark's expected models;
-4. one credentialed official rollout;
-5. one Tinker optimizer step with execution-derived rewards.
+1. mount one official warehouse credential into the sandbox and run one
+   official task end to end;
+2. keep the upstream stage-1 checks (raw table existence and row counts) and
+   stage-2 checks (ground-truth target data, key sorting, numeric tolerance,
+   case-insensitive strings) in the hidden verifier;
+3. provide Tinker API access and run one optimizer step with the execution
+   reward.
 
 Do not place warehouse credentials in task images, prompts, logs, or verifier
 artifacts.
