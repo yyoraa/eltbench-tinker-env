@@ -42,6 +42,19 @@ uv run pytest -q
 The local backend is only for trusted development and CI. Untrusted model
 rollouts must use Harbor's container/Modal sandbox backend.
 
+## Materialize the official books task
+
+```bash
+uv run python scripts/materialize_books.py \
+  --elt-bench ../ELT-Bench --output build/tasks
+```
+
+The public materializer intentionally does not create `tests/`: the official
+hidden verifier and warehouse credentials must be mounted by the credentialed
+runner only after the rollout. For a completely runnable first optimizer-step
+smoke, materialize the included local fixture from Python with
+`materialize_local_harbor_task`.
+
 ## Tinker wiring
 
 Install Tinker Cookbook and materialize each official ELT task as:
@@ -71,6 +84,23 @@ Pass `builder` to Tinker Cookbook's standard RL `Config`. The cookbook creates
 one fresh sandbox per rollout, gives the agent a bash tool, uploads hidden tests
 only after the episode, parses `/logs/verifier/reward.txt`, computes group
 advantages, and performs the optimizer update.
+
+The repository also provides a guarded one-command training entrypoint. It
+refuses to start without the runtime API key and validates the hidden grader
+contract before contacting Tinker:
+
+```bash
+uv run python scripts/materialize_local_smoke.py --output build/tasks
+uv sync --extra tinker
+TINKER_API_KEY=... uv run eltbench-tinker-train \
+  build/tasks/customer-revenue \
+  --model <tinker-model> --steps 1 --group-size 2 --groups-per-batch 1
+```
+
+This calls Tinker Cookbook's real Harbor RL recipe with `max_steps=1`. See
+[`docs/design.md`](docs/design.md) for the environment/reward design and
+[`docs/evidence.md`](docs/evidence.md) for the completed versus credentialed
+evidence boundary.
 
 ## Official ELT-Bench import
 

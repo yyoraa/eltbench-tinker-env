@@ -6,6 +6,7 @@ from eltbench_tinker.harbor_task import materialize_local_harbor_task
 from eltbench_tinker.official import OfficialELTBenchTask
 from eltbench_tinker.official_compare import rows_match, values_match
 from eltbench_tinker.task import ELTTask, ExpectedTable
+from eltbench_tinker.train import _validate, parser
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "customer_revenue"
@@ -211,3 +212,16 @@ def test_official_comparison_semantics() -> None:
         [(1, "a", 10.0), (2, "b", 20)],
         key_indices=(0,),
     )
+
+
+def test_training_entrypoint_fails_closed_without_key(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("TINKER_API_KEY", raising=False)
+    args = parser().parse_args(
+        [str(tmp_path), "--model", "test/model", "--steps", "1"]
+    )
+    try:
+        _validate(args)
+    except SystemExit as error:
+        assert "TINKER_API_KEY" in str(error)
+    else:
+        raise AssertionError("training accepted a missing Tinker API key")
