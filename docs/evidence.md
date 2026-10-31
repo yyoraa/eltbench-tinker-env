@@ -30,6 +30,12 @@ Real Airbyte syncs into a Snowflake `books` database on the official
 This verifies the extract-and-load stage against real warehouse state. It was
 run by the operator, not by a model rollout.
 
+## Not implemented yet
+
+The repository has no Snowflake destination adapter, no grader or credentialed
+runner for official tasks, and no way for a sandboxed model to reach Airbyte or
+Snowflake. The ingestion above was done with operator scripts outside this repo.
+
 ## Not run
 
 No Tinker optimizer step has been executed. `eltbench-tinker-train` is written
