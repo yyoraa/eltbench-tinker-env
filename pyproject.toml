@@ -3,11 +3,12 @@ name = "eltbench-tinker-env"
 version = "0.1.0"
 description = "A verifiable ELT-Bench environment adapter for Tinker RL"
 requires-python = ">=3.11"
-dependencies = ["duckdb>=1.4.0", "pyyaml>=6.0"]
+dependencies = ["duckdb>=1.4.0", "pyyaml>=6.0", "pandas>=2.0", "numpy>=1.26"]
 
 [project.optional-dependencies]
 test = ["pytest>=8.0"]
 tinker = ["tinker-cookbook"]
+snowflake = ["snowflake-connector-python>=3.12"]
 
 [project.scripts]
 eltbench-tinker-train = "eltbench_tinker.train:main"

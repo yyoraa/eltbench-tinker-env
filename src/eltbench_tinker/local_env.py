@@ -4,10 +4,11 @@ import shutil
 import subprocess
 import tempfile
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from .destination import DuckDBDestination
+from .destination import Destination, create_destination, state_fingerprint
 from .task import ELTTask
 from .verifier import ELTVerifier, VerificationResult
 
@@ -35,11 +36,18 @@ class LocalELTEnvironment:
     models. Production rollouts use the Harbor sandbox adapter.
     """
 
-    def __init__(self, task: ELTTask):
+    def __init__(
+        self,
+        task: ELTTask,
+        destination_factory: Callable[[Path], Destination] | None = None,
+    ):
         self.task = task
+        self._destination_factory = destination_factory or (
+            lambda workspace: create_destination("duckdb", root=workspace)
+        )
         self._tmp: tempfile.TemporaryDirectory[str] | None = None
         self.workspace: Path | None = None
-        self.destination: DuckDBDestination | None = None
+        self.destination: Destination | None = None
         self._done = False
 
     def reset(self) -> str:
@@ -50,8 +58,8 @@ class LocalELTEnvironment:
         shutil.copytree(self.task.source_dir, self.workspace)
         # Keep the local database beside the exposed source files so relative
         # paths in SQL behave exactly as they do inside a task container.
-        self.destination = DuckDBDestination(self.workspace)
-        self.destination.initialize()
+        self.destination = self._destination_factory(self.workspace)
+        self.destination.reset()
         self._done = False
         return self.task.instruction
 
@@ -64,7 +72,7 @@ class LocalELTEnvironment:
             "PATH": "/usr/local/bin:/usr/bin:/bin",
             "HOME": str(self.workspace),
             "ELT_WORKSPACE": str(self.workspace),
-            "ELT_DUCKDB_PATH": str(self.destination.db_path),
+            **self.destination.runtime_env(),
         }
         completed = subprocess.run(
             ["bash", "--noprofile", "--norc", "-c", command],
@@ -102,15 +110,18 @@ class LocalELTEnvironment:
         started = time.perf_counter()
         self.execute_sql_file(relative_sql_path)
         assert self.destination is not None
-        first_state = self.destination.state_fingerprint()
+        first_state = state_fingerprint(self.destination)
         self.execute_sql_file(relative_sql_path)
-        second_state = self.destination.state_fingerprint()
+        second_state = state_fingerprint(self.destination)
         transition_seconds = time.perf_counter() - started
         grade_started = time.perf_counter()
         verification = self.grade()
         grade_seconds = time.perf_counter() - grade_started
         idempotent = first_state == second_state
-        reward = round(0.9 * verification.reward + (0.1 if idempotent else 0.0), 8)
+        # Idempotence is only worth something on top of real output: a submission
+        # that changes nothing is trivially idempotent and must still earn zero.
+        bonus = 0.1 if idempotent and verification.reward > 0 else 0.0
+        reward = round(0.9 * verification.reward + bonus, 8)
         self._done = True
         return SubmissionResult(
             reward=reward,

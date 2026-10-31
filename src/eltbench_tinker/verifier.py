@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .destination import DuckDBDestination
+from .destination import Destination, canonical_rows
 from .task import ELTTask
 
 
@@ -16,7 +16,7 @@ class VerificationResult:
 class ELTVerifier:
     """Grades final warehouse state; never trusts agent-reported success."""
 
-    def __init__(self, task: ELTTask, destination: DuckDBDestination):
+    def __init__(self, task: ELTTask, destination: Destination):
         self.task = task
         self.destination = destination
 
@@ -41,12 +41,14 @@ class ELTVerifier:
                 continue
             schema += 1 / total
 
-            order = ", ".join(expected.order_by) if expected.order_by else "ALL"
-            rows = tuple(self.destination.query(f'SELECT * FROM "{expected.name}" ORDER BY {order}'))
-            if rows != expected.rows:
+            names = [name for name, _ in expected.columns]
+            first = [names.index(column) for column in expected.order_by]
+            _, fetched = self.destination.fetch_table(expected.name)
+            rows = tuple(canonical_rows(fetched, first))
+            wanted = tuple(canonical_rows(expected.rows, first))
+            if rows != wanted:
                 errors.append(
-                    f"content mismatch for {expected.name}: "
-                    f"expected={expected.rows!r} actual={rows!r}"
+                    f"content mismatch for {expected.name}: expected={wanted!r} actual={rows!r}"
                 )
                 continue
             content += 1 / total
@@ -59,4 +61,3 @@ class ELTVerifier:
         }
         reward = 0.1 * existence + 0.2 * schema + 0.7 * content
         return VerificationResult(round(reward, 8), components, tuple(errors))
-
