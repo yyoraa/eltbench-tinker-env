@@ -71,7 +71,7 @@ append 85 s; rewards 0.0, 1.0, 0.625) used slower schema-level CLONE and per-tab
 
 ### Reset and stage-1 latency
 
-Measured once by `clone_probe`, single connection unless noted, 15 tables:
+Measured once with a one-off script on `SEED_BOOKS_V1`, single connection unless noted, 15 tables:
 
 | Operation | Seconds |
 |---|---:|
