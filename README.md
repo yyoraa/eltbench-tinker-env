@@ -99,8 +99,8 @@ TINKER_API_KEY=... uv run eltbench-tinker-train \
 
 This calls Tinker Cookbook's real Harbor RL recipe with `max_steps=1`. See
 [`docs/design.md`](docs/design.md) for the environment/reward design and
-[`docs/evidence.md`](docs/evidence.md) for the completed versus credentialed
-evidence boundary.
+[`docs/evidence.md`](docs/evidence.md) for what was and was not run, and
+[`docs/deployment.md`](docs/deployment.md) for fixes needed on rootless Docker.
 
 ## Official ELT-Bench import
 
