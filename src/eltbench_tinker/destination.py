@@ -10,6 +10,7 @@ proves this with a fake SQLite destination).
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -49,6 +50,10 @@ class Destination(Protocol):
         ...
 
     def table_size(self, table: str) -> int:
+        ...
+
+    def table_sizes(self) -> dict[str, int]:
+        """Row count of every base table, as cheaply as the warehouse allows."""
         ...
 
     def fetch_table(self, table: str) -> tuple[list[str], list[Row]]:
@@ -139,6 +144,10 @@ class DuckDBDestination:
     def _connect(self, read_only: bool = False) -> Any:
         import duckdb
 
+        if read_only and not self.db_path.exists():
+            # Nothing was ever written (a nop rollout): an empty warehouse, not an error.
+            self.root.mkdir(parents=True, exist_ok=True)
+            duckdb.connect(str(self.db_path)).close()
         return duckdb.connect(str(self.db_path), read_only=read_only)
 
     def reset(self) -> None:
@@ -148,7 +157,13 @@ class DuckDBDestination:
 
     def execute(self, sql: str) -> None:
         with self._connect() as connection:
+            # A submitted pipeline runs as root during grading. Allow exactly its
+            # own source files so it cannot read answers or write the reward file.
+            files = [path for path in self.root.iterdir() if path.is_file()]
+            allowed = [str(path.resolve()) for path in files] + [path.name for path in files]
             connection.execute("SET file_search_path = ?", (str(self.root),))
+            connection.execute("SET allowed_paths = ?", (allowed,))
+            connection.execute("SET enable_external_access = false")
             connection.execute(sql)
 
     def query(self, sql: str, parameters: tuple[object, ...] = ()) -> list[Row]:
@@ -172,6 +187,9 @@ class DuckDBDestination:
     def table_size(self, table: str) -> int:
         return int(self.query(f'SELECT count(*) FROM "{table}"')[0][0])
 
+    def table_sizes(self) -> dict[str, int]:
+        return {table: self.table_size(table) for table in self.list_tables()}
+
     def fetch_table(self, table: str) -> tuple[list[str], list[Row]]:
         with self._connect(read_only=True) as connection:
             cursor = connection.execute(f'SELECT * FROM "{table}"')
@@ -182,8 +200,10 @@ class DuckDBDestination:
         target = self.root.parent / f"{self.root.name}{suffix}"
         shutil.rmtree(target, ignore_errors=True)
         target.mkdir(parents=True)
-        if self.db_path.exists():
-            shutil.copy2(self.db_path, target / self.db_path.name)
+        # Source files travel with the database: pipelines read them by relative path.
+        for path in self.root.iterdir():
+            if path.is_file():
+                shutil.copy2(path, target / path.name)
         return DuckDBDestination(target)
 
     def runtime_env(self) -> dict[str, str]:
@@ -197,4 +217,10 @@ class DuckDBDestination:
         shutil.rmtree(self.root, ignore_errors=True)
 
 
-register_destination("duckdb", DuckDBDestination)
+def _duckdb_from_env(root: Path | None = None) -> DuckDBDestination:
+    if root is None:
+        root = Path(os.environ.get("ELT_DUCKDB_PATH", "/workspace/warehouse.duckdb")).parent
+    return DuckDBDestination(Path(root))
+
+
+register_destination("duckdb", _duckdb_from_env)

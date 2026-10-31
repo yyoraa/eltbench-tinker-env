@@ -55,6 +55,9 @@ class SQLiteDestination:
     def table_size(self, table):
         return self.query(f'SELECT count(*) FROM "{table}"')[0][0]
 
+    def table_sizes(self):
+        return {table: self.table_size(table) for table in self.list_tables()}
+
     def fetch_table(self, table):
         with self._connect() as connection:
             cursor = connection.execute(f'SELECT * FROM "{table}"')
@@ -197,9 +200,10 @@ def test_snowflake_reset_clones_seed_and_cleanup_drops_only_rollout() -> None:
     destination, connection = _snowflake("r_abc", seed_schema="SEED_BOOKS_V1")
     destination.reset()
     destination.cleanup()
-    assert connection.statements[0] == (
-        "CREATE OR REPLACE SCHEMA BOOKS.R_ABC CLONE BOOKS.SEED_BOOKS_V1"
-    )
+    assert connection.statements[:2] == [
+        "CREATE OR REPLACE SCHEMA BOOKS.R_ABC",
+        "SHOW TABLES IN SCHEMA BOOKS.SEED_BOOKS_V1",
+    ]
     assert connection.statements[-1] == "DROP SCHEMA IF EXISTS BOOKS.R_ABC"
 
 

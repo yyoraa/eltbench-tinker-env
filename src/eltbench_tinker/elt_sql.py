@@ -33,6 +33,23 @@ def connect():
         return snowflake.connector.connect(**kwargs)
 
 
+def run_duckdb(sql: str, path: str, max_rows: int) -> int:
+    import duckdb
+
+    writer = csv.writer(sys.stdout)
+    try:
+        with duckdb.connect(path) as connection:
+            cursor = connection.execute(sql)
+            if cursor.description:
+                writer.writerow([item[0] for item in cursor.description])
+                for row in cursor.fetchmany(max_rows):
+                    writer.writerow(row)
+    except duckdb.Error as error:
+        print(f"SQL error: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="elt-sql", description=__doc__)
     group = parser.add_mutually_exclusive_group(required=True)
@@ -41,6 +58,8 @@ def main() -> int:
     parser.add_argument("--max-rows", type=int, default=50)
     args = parser.parse_args()
     sql = args.sql if args.sql is not None else args.path.read_text()
+    if os.environ.get("ELT_DUCKDB_PATH"):
+        return run_duckdb(sql, os.environ["ELT_DUCKDB_PATH"], args.max_rows)
     connection = connect()
     status = 0
     writer = csv.writer(sys.stdout)

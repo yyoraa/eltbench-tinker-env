@@ -1,8 +1,12 @@
 from pathlib import Path
 
+import duckdb
+import pytest
+
+from eltbench_tinker.destination import DuckDBDestination
 from eltbench_tinker.local_env import LocalELTEnvironment
-from eltbench_tinker.harbor_grader import grade as harbor_grade
 from eltbench_tinker.harbor_task import materialize_local_harbor_task
+from eltbench_tinker.official_grader import GradingSpec, grade_episode
 from eltbench_tinker.official import OfficialELTBenchTask
 from eltbench_tinker.official_compare import rows_match, values_match
 from eltbench_tinker.task import ELTTask, ExpectedTable
@@ -98,22 +102,35 @@ def test_materialized_harbor_hidden_grader(tmp_path: Path) -> None:
     assert "expected" not in (task_dir / "instruction.md").read_text().lower()
 
     env = LocalELTEnvironment(task)
+    pipeline = (
+        "CREATE OR REPLACE TABLE customer_revenue AS "
+        "SELECT c.customer_id::BIGINT AS customer_id, c.name::VARCHAR AS name, "
+        "CAST(COALESCE(SUM(o.amount), 0) AS DECIMAL(38,2)) AS revenue "
+        "FROM read_csv_auto('customers.csv') c "
+        "LEFT JOIN read_csv_auto('orders.csv') o USING (customer_id) "
+        "GROUP BY c.customer_id, c.name"
+    )
     try:
         env.reset()
-        env.destination.execute(
-            "CREATE TABLE customer_revenue AS "
-            "SELECT c.customer_id::BIGINT AS customer_id, c.name::VARCHAR AS name, "
-            "CAST(COALESCE(SUM(o.amount), 0) AS DECIMAL(38,2)) AS revenue "
-            "FROM read_csv_auto('customers.csv') c "
-            "LEFT JOIN read_csv_auto('orders.csv') o USING (customer_id) "
-            "GROUP BY c.customer_id, c.name"
-        )
-        reward = harbor_grade(
-            env.destination.db_path, task_dir / "tests" / "expected.json"
-        )
-        assert reward == 1.0
+        env.destination.execute(pipeline)
+        spec = GradingSpec.load(task_dir / "tests" / "grading.json")
+        assert grade_episode(env.destination, spec, pipeline).reward == 1.0
     finally:
         env.cleanup()
+
+
+def test_duckdb_pipeline_cannot_touch_files_outside_its_directory(tmp_path: Path) -> None:
+    secret = tmp_path / "answers.csv"
+    secret.write_text("a\n1\n")
+    destination = DuckDBDestination(tmp_path / "wh")
+    destination.reset()
+    for attack in (
+        f"CREATE TABLE stolen AS SELECT * FROM read_csv_auto('{secret}')",
+        f"COPY (SELECT 1.0) TO '{tmp_path}/reward.txt'",
+    ):
+        with pytest.raises(duckdb.Error):
+            destination.execute(attack)
+    assert not (tmp_path / "reward.txt").exists()
 
 
 def test_official_books_importer_redacts_credentials(tmp_path: Path) -> None:

@@ -84,14 +84,13 @@ def stage1(destination: Destination, expected: dict[str, int]) -> tuple[float, d
     """Official stage 1: every raw table exists with the exact row count."""
     if not expected:
         return 1.0, {}
-    present = {name.upper() for name in destination.list_tables()}
+    sizes = {name.upper(): size for name, size in destination.table_sizes().items()}
     failures: dict[str, Any] = {}
     for table, wanted in expected.items():
-        if table.upper() not in present:
+        size = sizes.get(table.upper())
+        if size is None:
             failures[table] = "not found"
-            continue
-        size = destination.table_size(table)
-        if size != wanted:
+        elif size != wanted:
             failures[table] = {"rows": size, "expected": wanted}
     return (len(expected) - len(failures)) / len(expected), failures
 

@@ -6,6 +6,7 @@ import os
 import re
 import warnings
 from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
@@ -14,6 +15,7 @@ from .destination import Row
 ROLLOUT_SCHEMA = re.compile(r"^R_[A-Z0-9_]{1,200}$")
 SEED_SCHEMA = re.compile(r"^SEED_[A-Z0-9_]{1,200}$")
 RAW_SCHEMA = '"airbyte_internal"'
+CLONE_WORKERS = 8
 
 # Statements a submitted pipeline has no business running. The pipeline executes
 # with the shared role, so this is an accident and cheat filter, not a security
@@ -144,13 +146,29 @@ class SnowflakeDestination:
     def reset(self) -> None:
         if not ROLLOUT_SCHEMA.match(self.schema):
             raise ValueError(f"reset only applies to R_* schemas, not {self.schema!r}")
+        self._run(f"CREATE OR REPLACE SCHEMA {self.fqn}")
         if self.seed_schema:
-            self._run(
-                f"CREATE OR REPLACE SCHEMA {self.fqn} CLONE {self.database}.{self.seed_schema}"
-            )
-        else:
-            self._run(f"CREATE OR REPLACE SCHEMA {self.fqn}")
+            self._clone_tables_from(f"{self.database}.{self.seed_schema}")
         self._run(f"USE SCHEMA {self.fqn}")
+
+    def _clone_tables_from(self, source: str) -> None:
+        """Zero-copy clone table by table, concurrently.
+
+        Measured on books (docs/evidence.md): about 3 s against about 15 s for
+        ``CREATE SCHEMA ... CLONE``. Views are not carried over; pipelines must
+        rebuild from raw tables anyway.
+        """
+        tables = [str(row[1]) for row in self._run(f"SHOW TABLES IN SCHEMA {source}").fetchall()]
+
+        def clone(table: str) -> None:
+            cursor = self._connection.cursor()
+            try:
+                cursor.execute(f'CREATE TABLE {self.fqn}."{table}" CLONE {source}."{table}"')
+            finally:
+                cursor.close()
+
+        with ThreadPoolExecutor(max_workers=CLONE_WORKERS) as pool:
+            list(pool.map(clone, tables))
 
     def execute(self, sql: str) -> None:
         self._cursor()
@@ -163,12 +181,14 @@ class SnowflakeDestination:
         return [tuple(row) for row in self._run(sql, parameters).fetchall()]
 
     def list_tables(self) -> list[str]:
-        rows = self.query(
-            f"SELECT table_name FROM {self.database}.information_schema.tables "
-            "WHERE table_schema = %s AND table_type = 'BASE TABLE'",
-            (self.schema,),
-        )
-        return [str(row[0]) for row in rows]
+        return list(self.table_sizes())
+
+    def table_sizes(self) -> dict[str, int]:
+        """SHOW TABLES is metadata-only: no warehouse resume, about 0.1 s."""
+        cursor = self._run(f"SHOW TABLES IN SCHEMA {self.fqn}")
+        names = [item[0] for item in cursor.description]
+        rows = [dict(zip(names, row)) for row in cursor.fetchall()]
+        return {str(row["name"]): int(row["rows"] or 0) for row in rows}
 
     def table_exists(self, table: str) -> bool:
         return table.upper() in {name.upper() for name in self.list_tables()}

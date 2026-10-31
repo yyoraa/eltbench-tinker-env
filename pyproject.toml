@@ -12,6 +12,7 @@ snowflake = ["snowflake-connector-python>=3.12"]
 
 [project.scripts]
 eltbench-tinker-train = "eltbench_tinker.train:main"
+eltbench-run = "eltbench_tinker.runner:main"
 
 [build-system]
 requires = ["hatchling"]

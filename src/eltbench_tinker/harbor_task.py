@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 import shutil
 from pathlib import Path
@@ -17,45 +18,65 @@ def _write_common_task_files(root: Path, instruction: str) -> None:
 
 
 def materialize_local_harbor_task(task: ELTTask, output_dir: Path) -> Path:
-    """Materialize a complete credential-free Harbor task and hidden grader."""
+    """Credential-free Harbor task that exercises the same hidden grader as official ones."""
     root = Path(output_dir) / task.task_id
     shutil.rmtree(root, ignore_errors=True)
     env_dir = root / "environment"
-    tests_dir = root / "tests"
     assets_dir = env_dir / "assets"
+    tools_dir = env_dir / "tools"
+    tests_dir = root / "tests"
     assets_dir.mkdir(parents=True)
-    tests_dir.mkdir(parents=True)
+    tools_dir.mkdir()
+    (tests_dir / "ground_truth").mkdir(parents=True)
     for source in task.source_dir.iterdir():
         if source.is_file():
             shutil.copy2(source, assets_dir / source.name)
-    _write_common_task_files(root, task.instruction)
+    package = Path(__file__).parent
+    shutil.copy2(package / "elt_sql.py", tools_dir / "elt_sql.py")
+    _write_common_task_files(
+        root,
+        task.instruction.rstrip()
+        + "\n\nWork in /workspace. Run SQL with `elt-sql -f file.sql` or `elt-sql -e 'SELECT 1'`."
+        "\nSubmit by writing your idempotent SQL to /workspace/submission/pipeline.sql and "
+        "executing it, then reply without calling a tool.",
+    )
     (env_dir / "Dockerfile").write_text(
         "FROM python:3.11-slim\n"
-        "RUN pip install --no-cache-dir duckdb==1.4.1\n"
-        "WORKDIR /workspace\n"
+        "RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends procps "
+        "&& rm -rf /var/lib/apt/lists/*\n"
+        "RUN python -m venv /opt/elt/venv && /opt/elt/venv/bin/pip install -q --no-cache-dir "
+        "duckdb==1.4.1 pandas==2.2.3 numpy==2.2.6\n"
+        "COPY tools/ /opt/elt/tools/\n"
+        "RUN printf '#!/bin/sh\\nexec /opt/elt/venv/bin/python -sE /opt/elt/tools/elt_sql.py \"$@\"\\n' "
+        "> /usr/local/bin/elt-sql && chmod 755 /usr/local/bin/elt-sql\n"
+        "RUN useradd --create-home --uid 1000 agent && mkdir -p /logs/verifier\n"
         "COPY assets/ /workspace/\n"
+        "RUN mkdir -p /workspace/submission && chown -R agent:agent /workspace\n"
+        "WORKDIR /workspace\n"
         "ENV ELT_DUCKDB_PATH=/workspace/warehouse.duckdb\n"
     )
-    hidden = {
-        "tables": [
+    for table in task.expected_tables:
+        names = [name for name, _ in table.columns]
+        with (tests_dir / "ground_truth" / f"{table.name}.csv").open("w", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(names)
+            writer.writerows(table.rows)
+    (tests_dir / "grading.json").write_text(
+        json.dumps(
             {
-                "name": table.name,
-                "columns": table.columns,
-                "rows": table.rows,
-                "order_by": table.order_by,
-            }
-            for table in task.expected_tables
-        ]
-    }
-    (tests_dir / "expected.json").write_text(json.dumps(hidden, default=str))
-    grader_source = Path(__file__).with_name("harbor_grader.py")
-    shutil.copy2(grader_source, tests_dir / "harbor_grader.py")
-    (tests_dir / "test.sh").write_text(
-        "#!/bin/sh\nset -eu\n"
-        "python /tests/harbor_grader.py "
-        "/workspace/warehouse.duckdb /tests/expected.json "
-        "/logs/verifier/reward.txt\n"
+                "task": task.task_id,
+                "destination": "duckdb",
+                "mode": "transform_only",
+                "raw_tables": {},
+                "target_tables": [table.name for table in task.expected_tables],
+                "sort_keys": {table.name: list(table.order_by) for table in task.expected_tables},
+                "ground_truth_dir": "ground_truth",
+            },
+            indent=1,
+        )
     )
+    _write_grader(tests_dir)
+    (tests_dir / "test.sh").write_text(TEST_SH.format(destination="duckdb"))
     (tests_dir / "test.sh").chmod(0o755)
     return root
 
@@ -85,6 +106,15 @@ sys.exit(main())
 " --spec /tests/grading.json --destination {destination} \\
   --submission /workspace/submission/pipeline.sql --logs /logs/verifier
 """
+
+
+def _write_grader(tests_dir: Path) -> None:
+    package = Path(__file__).parent
+    grader_dir = tests_dir / "eltbench_grader"
+    grader_dir.mkdir()
+    (grader_dir / "__init__.py").write_text("")
+    for module in GRADER_MODULES:
+        shutil.copy2(package / module, grader_dir / module)
 
 
 def _official_dockerfile() -> str:
@@ -150,15 +180,12 @@ def materialize_official_task(
             raise FileNotFoundError(f"ground truth missing for {table}: {gold}")
         shutil.copy2(gold, tests_dir / "ground_truth" / gold.name)
         gold_tables.append(table)
-    grader_dir = tests_dir / "eltbench_grader"
-    grader_dir.mkdir()
-    (grader_dir / "__init__.py").write_text("")
-    for module in GRADER_MODULES:
-        shutil.copy2(package / module, grader_dir / module)
+    _write_grader(tests_dir)
     (tests_dir / "grading.json").write_text(
         json.dumps(
             {
                 "task": task.name,
+                "destination": task.destination,
                 "mode": mode,
                 "raw_tables": json.loads(Path(table_json).read_text())[task.name],
                 "target_tables": gold_tables,
