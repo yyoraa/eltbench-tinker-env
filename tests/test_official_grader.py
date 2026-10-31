@@ -258,3 +258,11 @@ def test_training_entrypoint_accepts_materialized_official_task(tmp_path: Path, 
     )
     monkeypatch.setenv("TINKER_API_KEY", "not-a-real-key")
     _validate(parser().parse_args([str(root), "--model", "test/model"]))
+
+
+def test_damaged_seed_is_detected() -> None:
+    from eltbench_tinker.provisioning import seed_problems
+
+    expected = {"book": 2, "author": 1}
+    assert seed_problems({"BOOK": 2, "AUTHOR": 1, "EXTRA": 9}, expected) == {}
+    assert seed_problems({"BOOK": 5}, expected) == {"book": 5, "author": None}

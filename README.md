@@ -1,144 +1,117 @@
-# ELT-Bench Tinker Environment
+# ELT-Bench Tinker RL environment
 
-Prototype bridge from an ELT benchmark task to an executable, verifiable RL
-environment. It deliberately separates:
+A Tinker RLVR recipe for [ELT-Bench](https://github.com/uiuc-kang-lab/ELT-Bench). A policy
+gets a sandbox with a bash tool, Airbyte and a warehouse; it loads sources, writes
+transformations and submits a pipeline. A hidden grader executes against the warehouse
+and returns the reward. Tasks are Harbor directories run by Tinker Cookbook's own recipe.
 
-- the public task instruction and source files;
-- a destination-specific warehouse adapter;
-- the mutable rollout workspace;
-- hidden expected warehouse state and grading;
-- Tinker Cookbook's existing Harbor `EnvGroupBuilder` and RL training loop.
+- [Design](docs/design.md): contract, reward, defenses, latency, status.
+- [Evidence](docs/evidence.md): exactly what was run, with numbers, and what was not.
+- [Deployment](docs/deployment.md): fixes needed on rootless Docker.
 
-## What works
+**Status:** real-warehouse rollouts use scripted policies. No language model has acted in
+this environment, and no real Tinker optimizer step has run. The Tinker test is a mock.
 
-- Credential-free DuckDB episode reset and cleanup.
-- Multi-turn command workspace plus explicit SQL execution.
-- Explicit `submit()` terminal transition: execute the submitted pipeline,
-  rerun it to test idempotence, grade the final state, and reject later actions.
-- Hidden final-state verification of table existence, exact schema, and rows.
-- Bounded reward where outcome correctness dominates shaping.
-- ELT-Bench-compatible value/row comparison helpers: numeric tolerance,
-  case-insensitive strings, null handling, deterministic key-first sorting.
-- Transition and grading latency measurements on each local submission.
-- Adapter that feeds Harbor-formatted ELT tasks into Tinker's existing
-  `HarborDatasetBuilder` / `HarborEnvGroupBuilder`.
-- Importer for the real `uiuc-kang-lab/ELT-Bench` repository. It reads a
-  destination/task pair, target `data_model.yaml`, and shared source schemas,
-  while stripping credentials from the agent-visible bundle.
-- Harbor task materializer with a real `environment/Dockerfile`, immutable
-  public assets, and a hidden `tests/test.sh` grader that writes Harbor's
-  `/logs/verifier/reward.txt` contract.
-- Integration tests for oracle success, nop failure, append/idempotence failure,
-  terminal-state enforcement, partial reward, state isolation, official import
-  redaction, and official comparison semantics.
+## Layout
 
-## Run the local integration test
+| Path | Purpose |
+|---|---|
+| `src/eltbench_tinker/destination.py` | `Destination` protocol, registry, DuckDB backend |
+| `src/eltbench_tinker/snowflake_destination.py` | Snowflake backend, one schema per rollout |
+| `src/eltbench_tinker/official_grader.py` | Tiered grader and reward (runs as `tests/test.sh`) |
+| `src/eltbench_tinker/official_stage2.py` | Upstream comparator, copied verbatim |
+| `src/eltbench_tinker/docker_sandbox.py` | Local Docker `SandboxInterface` and `SandboxFactory` |
+| `src/eltbench_tinker/airbyte.py`, `elt_sql.py` | Ingestion code and sandbox tools |
+| `src/eltbench_tinker/runner.py`, `policies.py` | Credentialed runner and scripted policies |
+| `src/eltbench_tinker/train.py` | Training entrypoint on the Cookbook's recipe |
+| `oracle/books_pipeline.sql` | Reference solution; never enters an image or `tests/` |
+
+## 1. Credential-free local tests
+
+Needs Docker for the integration tests, which skip if the daemon is unreachable. No
+warehouse, no Tinker account. The first run builds a small image.
 
 ```bash
 uv sync --extra test
-uv run pytest -q
+uv run python -m pytest -q
 ```
 
-The local backend is only for trusted development and CI. Untrusted model
-rollouts must use Harbor's container/Modal sandbox backend.
-
-## Materialize the official books task
+The mock Tinker test needs the training stack too. **It is a mock: it fakes the Tinker
+service and changes no weights.** It runs the Cookbook's real loop, a Docker sandbox and
+the hidden grader, and asserts the optimizer call receives advantages of +0.5 and -0.5
+from rewards of 1.0 and 0.0.
 
 ```bash
-uv run python scripts/materialize_books.py \
-  --elt-bench ../ELT-Bench --output build/tasks
+uv venv /path/to/venv --python 3.13
+uv pip install --python /path/to/venv/bin/python -e '.[snowflake,test]' \
+  'tinker-cookbook[modal] @ git+https://github.com/thinking-machines-lab/tinker-cookbook.git@nightly'
+/path/to/venv/bin/python -m pytest -q
 ```
 
-The public materializer intentionally does not create `tests/`: the official
-hidden verifier and warehouse credentials must be mounted by the credentialed
-runner only after the rollout. For a completely runnable first optimizer-step
-smoke, materialize the included local fixture from Python with
-`materialize_local_harbor_task`.
+The `modal` package is needed because the Cookbook imports it. A Modal account is not.
 
-## Tinker wiring
+## 2. Materialize official tasks
 
-Install Tinker Cookbook and materialize each official ELT task as:
-
-```text
-task-name/
-├── environment/Dockerfile
-├── tests/test.sh
-├── instruction.md
-└── task.toml
-```
-
-Then:
-
-```python
-from pathlib import Path
-from eltbench_tinker.tinker_adapter import build_dataset_builder
-
-builder = build_dataset_builder(
-    [Path("tasks/customer-revenue")],
-    model_name="<tinker-model>",
-    group_size=4,
-)
-```
-
-Pass `builder` to Tinker Cookbook's standard RL `Config`. The cookbook creates
-one fresh sandbox per rollout, gives the agent a bash tool, uploads hidden tests
-only after the episode, parses `/logs/verifier/reward.txt`, computes group
-advantages, and performs the optimizer update.
-
-The repository also provides a guarded one-command training entrypoint. It
-refuses to start without the runtime API key and validates the hidden grader
-contract before contacting Tinker:
+The checkout's `ground_truth_legacy/` disagrees with `evaluation/table.json`, so use the
+official v5 ground truth:
 
 ```bash
-uv run python scripts/materialize_local_smoke.py --output build/tasks
-uv sync --extra tinker
-TINKER_API_KEY=... uv run eltbench-tinker-train \
-  build/tasks/customer-revenue \
-  --model <tinker-model> --steps 1 --group-size 2 --groups-per-batch 1
+hf download tttjjj/elt_bench --repo-type dataset \
+  --include "gt_snowflake/books/**" --local-dir /path/to/gt
+python scripts/materialize_books.py --elt-bench ../ELT-Bench \
+  --ground-truth /path/to/gt/gt_snowflake/books --output build/tasks
 ```
 
-This calls Tinker Cookbook's real Harbor RL recipe with `max_steps=1`. See
-[`docs/design.md`](docs/design.md) for the environment/reward design and
-[`docs/evidence.md`](docs/evidence.md) for what was and was not run, and
-[`docs/deployment.md`](docs/deployment.md) for fixes needed on rootless Docker.
+This writes `build/tasks/snowflake-books` (`end_to_end`) and
+`build/tasks/snowflake-books-transform` (`transform_only`). `build/` is git-ignored because
+`tests/` holds answers.
 
-## Official ELT-Bench import
+## 3. Credentialed rollout
 
-```python
-from pathlib import Path
-from eltbench_tinker.official import OfficialELTBenchTask
-from eltbench_tinker.harbor_task import materialize_official_public_task
+Needs ELT-Bench sources and Airbyte running (see [deployment](docs/deployment.md)) and
+a file of `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, `SNOWFLAKE_PASSWORD`, `SNOWFLAKE_ROLE`,
+`SNOWFLAKE_WAREHOUSE`, read only at runtime. One command resets a rollout schema in
+`BOOKS`, runs the policy in a sandbox, grades, drops the schema and connections, and
+handles the warehouse:
 
-task = OfficialELTBenchTask.load(
-    Path("../ELT-Bench"), destination="snowflake", name="books"
-)
-task_dir = materialize_official_public_task(task, Path("build/tasks"))
+```bash
+export DOCKER_HOST=unix:///run/user/$(id -u)/docker.sock
+RUN="python -m eltbench_tinker.runner --env-file ~/.config/elt-bench/snowflake.env \
+  --airbyte-destination <destination-id>"
+
+# Once: load raw tables into the seed that transform_only clones (about 5 minutes).
+$RUN build-seed --elt-bench ../ELT-Bench
+
+$RUN rollout build/tasks/snowflake-books-transform --policy oracle      # 1.0
+$RUN rollout build/tasks/snowflake-books-transform --policy nop         # 0.0
+$RUN rollout build/tasks/snowflake-books-transform --policy append      # 0.625
+$RUN rollout build/tasks/snowflake-books-transform --policy state_only  # 0.625
+$RUN rollout build/tasks/snowflake-books --policy oracle                # 1.0, with Airbyte
+$RUN rollout build/tasks/snowflake-books --policy nop                   # 0.0
 ```
 
-This creates the agent-visible half of the task only. The official repo's
-ground-truth CSVs and destination credentials must stay outside the image and
-prompt. A credentialed runner mounts credentials into the sandbox and supplies
-the hidden verifier at grading time. This mirrors Tinker Harbor's behavior:
-`tests/` is uploaded only after the agent episode ends.
+Each prints a JSON report with rewards, tiers and latencies. The sandbox joins the Airbyte
+compose network (`--network`, default `airbyte-compose-06311_airbyte_public`).
 
-## Still required for the official submission
+## 4. Tinker training
 
-The correct upstream repository is
-`https://github.com/uiuc-kang-lab/ELT-Bench`. The importer and public Harbor
-task contract are implemented and tested against its `snowflake/books` task.
-The remaining external executions are:
+Not run: the account used here returns HTTP 402. This is the command that would run one
+optimizer step with execution-derived rewards:
 
-1. mount one official warehouse credential into the sandbox and run one
-   official task end to end;
-2. keep the upstream stage-1 checks (raw table existence and row counts) and
-   stage-2 checks (ground-truth target data, key sorting, numeric tolerance,
-   case-insensitive strings) in the hidden verifier;
-3. provide Tinker API access and run one optimizer step with the execution
-   reward.
+```bash
+TINKER_API_KEY=... eltbench-tinker-train build/tasks/snowflake-books-transform \
+  --model <tinker-model> --steps 1 --group-size 2 --groups-per-batch 1 \
+  --env-file ~/.config/elt-bench/snowflake.env \
+  --airbyte-destination <destination-id>
+```
 
-Before submission, the credentialed runner should also run the same three
-adversarial acceptance checks used locally: oracle succeeds, nop fails, and a
-non-idempotent append-only pipeline cannot receive full reward.
+It refuses to start without the key and validates each task's contract first.
 
-Do not place warehouse credentials in task images, prompts, logs, or verifier
-artifacts.
+## Adding a warehouse
+
+Implement `Destination` and call `register_destination("name", factory)`. Materialize a
+task whose `tests/grading.json` names it, and add a provisioner to
+`provisioner_for_tasks` if rollouts need per-episode state. The environment and verifier
+do not change; `tests/test_destination_interface.py` shows a complete fake backend.
+
+Never put warehouse credentials in task images, prompts, logs or verifier artifacts.

@@ -28,6 +28,13 @@ not be set`, so every sync exits with code 125. Either enable delegation (needs
 root), or wrap `/usr/bin/docker` in the `airbyte-worker` container to drop
 `--cpus=*`. The wrapper is lost if the container is recreated.
 
+## Sandbox network
+
+`DockerSandboxFactory` attaches sandboxes to `airbyte-compose-06311_airbyte_public`, where
+the only other member is `airbyte-proxy`; `airbyte-server` and `airbyte-db` sit on the
+internal network. Snowflake is reached over the bridge's normal outbound route. Egress is not
+filtered. Airbyte's server URL inside the sandbox is `http://airbyte-proxy:8000`.
+
 ## Other notes
 
 - LocalStack data does not survive a restart; reload the S3 objects afterwards.

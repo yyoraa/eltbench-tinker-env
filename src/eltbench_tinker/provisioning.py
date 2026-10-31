@@ -32,6 +32,15 @@ def load_env_file(path: Path) -> dict[str, str]:
     return values
 
 
+def seed_problems(sizes: Mapping[str, int], expected: Mapping[str, int]) -> dict[str, Any]:
+    actual = {name.upper(): size for name, size in sizes.items()}
+    return {
+        table: actual.get(table.upper())
+        for table, rows in expected.items()
+        if actual.get(table.upper()) != rows
+    }
+
+
 @dataclass
 class SnowflakeProvisioner:
     """Reset one rollout schema: empty for end_to_end, seed clone for transform_only."""
@@ -58,6 +67,8 @@ class SnowflakeProvisioner:
             schema, database=self.database, config=config, seed_schema=seed
         )
         clock = time.perf_counter()
+        if seed:
+            self._check_seed(config, seed, spec["raw_tables"])
         destination.reset()
         reset_seconds = round(time.perf_counter() - clock, 3)
         destination.close()
@@ -80,6 +91,16 @@ class SnowflakeProvisioner:
             teardown=teardown,
             seconds={"reset_seconds": reset_seconds, "reset_used_clone": float(seed is not None)},
         )
+
+    def _check_seed(self, config: SnowflakeConfig, seed: str, expected: dict[str, int]) -> None:
+        """Refuse to clone a seed an earlier rollout could have damaged (metadata only)."""
+        reader = SnowflakeDestination(seed, database=self.database, config=config)
+        try:
+            problems = seed_problems(reader.table_sizes(), expected)
+        finally:
+            reader.close()
+        if problems:
+            raise RuntimeError(f"seed schema {seed} failed its row-count check: {problems}")
 
     def teardown(self, schema: str, config: SnowflakeConfig) -> dict[str, Any]:
         """Remove everything the rollout created: connections, raw tables, schemas."""

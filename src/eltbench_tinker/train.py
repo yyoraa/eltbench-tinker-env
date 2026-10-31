@@ -15,7 +15,8 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--steps", type=int, default=1)
     result.add_argument("--group-size", type=int, default=2)
     result.add_argument("--groups-per-batch", type=int, default=1)
-    result.add_argument("--max-turns", type=int, default=10)
+    result.add_argument("--max-turns", type=int, default=40)
+    result.add_argument("--max-trajectory-tokens", type=int, default=64 * 1024)
     result.add_argument("--max-tokens", type=int, default=4096)
     result.add_argument("--learning-rate", type=float, default=1e-5)
     result.add_argument("--lora-rank", type=int, default=32)
@@ -112,6 +113,7 @@ async def _run(args: argparse.Namespace) -> None:
         command_timeout=args.command_timeout,
         grader_timeout=args.grader_timeout,
         renderer_name=args.renderer,
+        max_trajectory_tokens=args.max_trajectory_tokens,
     )
     await cli_main(config, tasks, sandbox_factory=_sandbox_factory(args))
 
