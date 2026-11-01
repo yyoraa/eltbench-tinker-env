@@ -1,7 +1,7 @@
 # ELT-Bench RL environment: implementation design
 
 Evidence for every number here is in [evidence.md](evidence.md). A real model
-rollout and a real Tinker optimizer step have **not** been run; see section 7.
+rollout and a real Tinker optimizer step have **not** been run; see section 8.
 
 ## 1. Goal and scope
 
@@ -121,7 +121,27 @@ insufficient privileges. The runner tries, records `no-privilege`, then polls un
 60 s auto-suspend takes effect; it observed `SUSPENDED` after every recorded run, within
 62 s. Grants were not changed, as instructed.
 
-## 7. Implementation status and limitations
+## 7. Comparison with other benchmark environments
+
+Only the works below were checked, from their papers, docs or code. Most are evaluations, not RL environments.
+
+| Work, source | Reward signal | Hidden answers, anti-cheat | Reset, latency | What we do differently |
+|---|---|---|---|---|
+| Cookbook Harbor recipe https://github.com/thinking-machines-lab/tinker-cookbook/blob/main/tinker_cookbook/recipes/harbor_rl/harbor_env.py | Runs `test.sh`, reads `reward.txt` | Tests uploaded after rollout | Fresh sandbox, Modal default; latency not stated | Reuse it; add process kill, non-root policy |
+| Cookbook arithmetic https://github.com/thinking-machines-lab/tinker-cookbook/blob/main/tinker_cookbook/recipes/math_rl/arithmetic_env.py | Final integer equals x+y | Answer not shown | Stateless, single turn | Multi-turn, stateful |
+| Harbor, Terminal-Bench https://github.com/harbor-framework/harbor/blob/main/docs-mintlify/tasks/verifier.mdx https://arxiv.org/abs/2601.11868 | Tests check final container state | Late upload; optional separate verifier; manual audit | Per-trial container; Docker or cloud | Same format; graded state outside container |
+| SWE-bench https://arxiv.org/abs/2310.06770 https://github.com/SWE-bench/SWE-bench/blob/main/swebench/harness/grading.py https://github.com/SWE-bench/SWE-bench/issues/465 | FAIL_TO_PASS, PASS_TO_PASS tests | Test patch withheld; git-history leak reported | Layered Docker images, cache levels | Compare tables |
+| SWE-Gym https://arxiv.org/abs/2412.21139 https://github.com/SWE-Gym/SWE-Gym | Tests filter trajectories for fine-tuning | Not stated; README warns git shortcut | Per-instance images; latency not stated | Graded reward |
+| DeepSWE https://www.together.ai/blog/deepswe | 1 if sampled tests pass within 5 minutes | Not stated | Docker per problem, Kubernetes | Graded; concurrency untested |
+| BIRD, SQL-R1 https://github.com/AlibabaResearch/DAMO-ConvAI/blob/main/bird/llm/src/evaluation.py https://arxiv.org/abs/2504.08600 | Result-set equality on SQLite, plus format, execution, length terms | Not stated | Execution time limit; reset not stated | Builds pipelines, no format term |
+| Verifiers https://github.com/PrimeIntellect-ai/verifiers/blob/main/docs/runtimes.md https://github.com/PrimeIntellect-ai/verifiers/blob/main/docs/building-environments.md | Python `@vf.reward` methods | Optional isolated grading sandbox | Per-rollout runtime; filesystem checkpoints | Warehouse needs own reset |
+| ImpossibleBench https://arxiv.org/abs/2510.20270 | Pass rate on spec-conflicting tests measures cheating | Hiding tests nearly stops cheating, lowers performance | Not stated | No cheating-rate measurement |
+| ELT-Bench https://arxiv.org/abs/2504.04808 https://github.com/uiuc-kang-lab/ELT-Bench/blob/fcf3129df49ce5ce63ff46b2bbbbba1eaf9ec055/agents/common/warehouse.py | Row counts, then column comparison | Not stated; ground truth public | `DROP SCHEMA` per task; latency not stated | Same comparator; add replay, canary |
+| ADE-bench https://github.com/dbt-labs/ade-bench | dbt tests, including table equality | Tests replaced after agent | Snowflake database `CLONE` per task; latency not stated | Adds extract/load, replay; it has per-task roles, we share one |
+
+ELT differs: graded state sits in a paid Snowflake warehouse that cannot go in the container, so it outlives the sandbox. An `end_to_end` episode crosses tools, Airbyte extract/load then SQL transform. We did not find idempotence replay in these works; `CLONE` reset is not unique (ADE-bench clones databases, we clone tables per rollout), and tiering extends ELT-Bench's stages with a replay tier and a stage 1 that wakes no warehouse. No language model has run here, unlike SWE-Gym, DeepSWE and SQL-R1.
+
+## 8. Implementation status and limitations
 
 **Done, verified on real Snowflake and Airbyte:** the runner; both modes; oracle, nop,
 append and `state_only` outcomes; Airbyte ingestion from inside the sandbox.
@@ -136,6 +156,3 @@ a **mock** Tinker client on a DuckDB task.
 - No real Tinker optimizer step: the account returns HTTP 402.
 - Only `snowflake/books`. `task_streams` encodes this deployment's source naming.
 - Group rollouts share one warehouse and have not been run concurrently.
-
-Comparison with other work is limited to what was read: the Cookbook's Harbor recipe
-supplies the task format and training loop reused here, and uses Modal by default.
